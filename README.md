@@ -1,42 +1,217 @@
-## PROJECT #2 Overview
-There are two contracts. We start with `FortuneTeller.sol` which uses [Chainlink VRF](https://docs.chain.link/vrf/v2/introduction/), and then do `FortuneSeeker.sol` which uses [Chainlink Automation](https://docs.chain.link/chainlink-automation/introduction/).  You can access the [Chainlink Documentation here](docs.chain.link).
+# FortuneProtocol — Advanced Chainlink VRF v2.5 Fortune dApp
 
-You will need to have the native token for the blockchain test network you use.  This project is configured to be deployed and run on the Avalanche Fuji testnet, but you can deploy the code on any EVM network that is [supported by Chainlink](https://docs.chain.link/chainlink-automation/supported-networks/)
+A full-stack decentralized application that delivers verifiably random fortunes using Chainlink VRF v2.5 on Sepolia.
 
+## Architecture
 
-### `FortuneTeller.sol`
-This contract implements functions that seek a cryptographically verifiable (i.e. provably random) number from the Chainlink Oracle Networks VRF (Verifiable Random Function) service.
+```
+User → FortuneProtocol (VRF v2.5 Consumer) → Chainlink VRF → Random Fortune
+                  ↕
+         Frontend (Next.js + wagmi + viem)
+```
 
-Once that Random Number is stored in the contract's storage, we can call `seekFortune()` which uses that random number to random fortune from a stored array of fortunes.
+- **FortuneProtocol.sol**: Smart contract that handles paid fortune readings, daily fortunes, admin controls, and VRF v2.5 integration.
+- **Frontend**: Next.js TypeScript app with wallet connect, request form, history, daily fortune display, and admin panel.
+- **VRF v2.5**: Uses Chainlink's latest VRF standard for cryptographically provable randomness.
 
-The contract is designed such that it can be invoked by another smart contract, and uses an interface to callback that contract with the fortune. When being called by the client contract it expects to get paid before it will tell a fortune.
+## Contracts
 
-You will need to [register a VRF subscription](https://vrf.chain.link/) and [fund it with LINK tokens](https://faucets.chain.link/) to compensate the Chainlink Decentralized Oracles for them to do the computation work required to generate and submit a cryptographically provable random number.
+### `FortuneProtocol.sol`
+Core contract with:
+- `requestReading(uint32 packId)` — Pay ETH to request a fortune from a selected pack
+- `claimRefund(uint256 readingId)` — Refund if VRF doesn't fulfill within timeout
+- `requestDailyFortune()` — Anyone can trigger once per day for a public fortune
+- Owner controls: fee/pack management, pause/unpause, treasury withdrawal, VRF config
 
+### VRF v2.5 Integration
+- Uses `VRFConsumerBaseV2Plus` from `@chainlink/contracts`
+- Native payment support (no LINK required)
+- Configurable gas lane, callback gas, confirmations, and number of words
+- Subscription-based model — fund subscription with native ETH
 
-### `FortuneSeeker.sol`
-This contract is a "client" to `FortuneTeller`. It calls `FortuneTeller` and pays it some Eth. Therefore this contract must store a balance.
+## Prerequisites
 
-This contract also implements the interface required to be automatically callable by Chainlink's Automation service - a decentralized oracle network that automates the execution of specified functions in your smart contract.  The contract to be automated is called an "Upkeep", and you must [register and fund your Upkeep here](https://automation.chain.link/).
+- Node.js 18+
+- Yarn or npm
+- MetaMask (or any WalletConnect-compatible wallet)
+- Sepolia ETH for gas and VRF subscription funding
+- [Chainlink VRF Subscription](https://vrf.chain.link/) on Sepolia
 
-You can have a time based (cron-like) automation schedule or you can have custom logic that tells the Chainlink Decentralized Network whether or not your contract needs to have its target function invoked.  We use the custom logic approach in this project.
+## Setup
 
-As long as `FortuneTeller` is invoked to generate new random numbers, `FortuneSeeker` will receive a different (except by coincidence) Fortune from `FortuneTeller` - the frequency depends on the `interval` that you tell the Chainlink Automation Network you want your contract invoked, and will continue for so long as `FortuneSeeker` can pay `FortuneTeller` and for so long as your Chainlink Automation Upkeep registration has enough LINK balance.
+### 1. Install Dependencies
 
+```bash
+# Install Hardhat project deps
+yarn install
 
-## Getting started
-- Install the NPM packages
-- Fill in the Environment Variables needed in `hardhat.config.js` to connect your wallet, and other API keys.
-- Run `yarn hardhat test` to run the tests.
-- Run `yarn hardhat` to see the Hardhat Tasks available.  Two custom tasks: `deploy-teller` and `deploy-seeker` have been included in `hardhat.config.js`
+# Install frontend deps
+cd frontend
+npm install
+cd ..
+```
 
+### 2. Environment Variables
 
-## Tooling used
-- Hardhat
-- JavaScript/ NodeJs
-- Metamask Browser Wallet
-- Avalanche Fuji Network
-- Chainlink Decentralized Oracle Services
+Copy the example env file:
 
-## Resources
-You can access further [Chainlink Resources and Content here.](https://chain.link/)
+```bash
+cp .env.example .env
+```
+
+Fill in:
+- `SEPOLIA_RPC_URL` — Alchemy/Infura RPC URL
+- `PRIVATE_KEY` — Your wallet's private key (with Sepolia ETH)
+- `ETHERSCAN_API_KEY` — For contract verification
+- `SEPOLIA_VRF_COORDINATOR` — Sepolia VRF v2.5 coordinator address
+- `SEPOLIA_VRF_SUBSCRIPTION_ID` — Your VRF subscription ID
+- `TREASURY_ADDRESS` — Where contract fees will be withdrawn to
+
+### 3. Chainlink VRF Subscription
+
+1. Go to [vrf.chain.link](https://vrf.chain.link/)
+2. Connect wallet on Sepolia
+3. Create a new subscription
+4. Fund the subscription with ETH (native) — at least 0.1 ETH recommended
+5. Note your Subscription ID
+
+### 4. Compile & Test
+
+```bash
+# Compile contracts
+yarn hardhat compile
+
+# Run tests (48 tests)
+yarn hardhat test
+
+# Run coverage
+yarn hardhat coverage
+```
+
+## Deployment
+
+### Local Hardhat Network
+
+```bash
+yarn hardhat run scripts/deploy.js
+```
+
+This deploys a mock VRF coordinator, creates a subscription, funds it, and deploys FortuneProtocol.
+
+### Sepolia Testnet
+
+```bash
+yarn hardhat run scripts/deploy.js --network sepolia
+```
+
+The deploy script will:
+1. Deploy FortuneProtocol with your VRF subscription
+2. Wait for block confirmations
+3. Verify the contract on Etherscan
+
+After deployment:
+1. Go to [vrf.chain.link](https://vrf.chain.link/)
+2. Add the deployed contract as a consumer to your subscription
+
+### Frontend Setup
+
+1. Copy the deployed contract address
+2. Set it in the frontend:
+
+```bash
+cd frontend
+echo "NEXT_PUBLIC_CONTRACT_ADDRESS=<deployed_address>" >> .env.local
+echo "NEXT_PUBLIC_SEPOLIA_RPC_URL=<your_rpc_url>" >> .env.local
+```
+
+3. Start the dev server:
+
+```bash
+cd frontend
+npm run dev
+```
+
+## Usage
+
+### User Flow
+1. Open the dApp and connect your wallet
+2. Ensure you're on Sepolia network
+3. Select a fortune pack
+4. Click "Read My Fortune" and confirm the transaction
+5. Wait for VRF fulfillment (usually 1-2 blocks)
+6. View your fortune in the history panel
+7. If VRF takes longer than 24h, claim a refund
+
+### Daily Fortune
+- Anyone can request a daily public fortune once per day
+- The fortune is stored on-chain and displayed on the frontend
+- Resets every 24 hours
+
+### Admin Controls
+The contract owner can:
+- Pause/unpause the contract
+- Update reading fees
+- Add/edit fortune packs
+- Change treasury address
+- Update VRF configuration
+- Withdraw accumulated fees
+
+## Project Structure
+
+```
+.
+├── contracts/
+│   ├── FortuneProtocol.sol      # Main contract
+│   └── mocks/
+│       └── VRFCoordinatorV2PlusMock.sol
+├── tests/
+│   └── FortuneProtocol.test.js  # 48 tests
+├── scripts/
+│   ├── deploy.js                # Deployment script
+│   └── export-abi.js            # ABI export helper
+├── frontend/
+│   └── src/
+│       ├── app/                 # Next.js app
+│       ├── components/          # React components
+│       └── lib/                 # ABI, config, types
+├── hardhat.config.js
+├── package.json
+└── .env.example
+```
+
+## Test Coverage
+
+48 tests covering:
+- **Deployment**: Initial state, zero-address rejection
+- **Reading Request**: Valid/invalid packs, payment checks, pause state, duplicate limits
+- **Fulfillment**: VRF callback, fortune selection randomness
+- **Refunds**: Timeout, ownership validation, state checks, fee return
+- **Daily Fortune**: Request, fulfillment, interval enforcement, disable/enable
+- **Admin**: All owner-only functions, pause/unpause, VRF config, packs, treasury
+- **Withdrawals**: Treasury withdraw, custom recipient, unauthorized access
+- **Edge Cases**: Multiple readings, fee accumulation, empty user data, refund counts
+- **Events**: Correct emission and parameter encoding
+
+## Chainlink Resources
+
+- [VRF v2.5 Documentation](https://docs.chain.link/vrf/v2-5/subscription/get-a-random-number)
+- [VRF Supported Networks](https://docs.chain.link/vrf/v2-5/supported-networks)
+- [Chainlink Automation](https://docs.chain.link/chainlink-automation)
+- [VRF Subscription Manager](https://vrf.chain.link/)
+
+## Troubleshooting
+
+**"Insufficient native balance" on VRF request**
+- Fund your VRF subscription with ETH on [vrf.chain.link](https://vrf.chain.link/)
+
+**Contract not verified**
+- Ensure `ETHERSCAN_API_KEY` is set in `.env`
+- Run `yarn hardhat verify --network sepolia <address> <subId> <coordinator> <treasury>`
+
+**Frontend shows "wrong network"**
+- Switch MetaMask to Sepolia network
+- Chain ID: 11155111
+
+**Transaction fails with "Only callable by owner"**
+- Connect the owner wallet that deployed the contract
+- Use `transferOwnership()` if a new owner should take over
