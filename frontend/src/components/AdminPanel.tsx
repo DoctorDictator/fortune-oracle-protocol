@@ -4,11 +4,12 @@ import { useState } from "react"
 import { useAccount, useReadContract, useWriteContract } from "wagmi"
 import { fortuneProtocolAbi } from "@/lib/abi"
 import { FORTUNE_CONTRACT_ADDRESS } from "@/lib/config"
+import { parseEther } from "viem"
 
 export function AdminPanel() {
   const { address } = useAccount()
 
-  const { data: owner } = useReadContract({
+  const { data: owner, isLoading: ownerLoading } = useReadContract({
     address: FORTUNE_CONTRACT_ADDRESS as `0x${string}`,
     abi: fortuneProtocolAbi,
     functionName: "owner",
@@ -33,6 +34,15 @@ export function AdminPanel() {
   const [newPackFortunes, setNewPackFortunes] = useState("")
   const [newPackPrice, setNewPackPrice] = useState("")
 
+  if (ownerLoading) {
+    return (
+      <div className="p-6 bg-zinc-900 rounded-xl border border-amber-900/50">
+        <div className="h-5 w-32 bg-zinc-800 rounded animate-pulse mb-4" />
+        <div className="h-4 w-48 bg-zinc-800 rounded animate-pulse" />
+      </div>
+    )
+  }
+
   if (!isOwner) return null
 
   const handlePauseToggle = async () => {
@@ -48,12 +58,14 @@ export function AdminPanel() {
   const handleSetFee = async () => {
     if (!newFee) return
     try {
+      const feeWei = parseEther(newFee)
       await writeContractAsync({
         address: FORTUNE_CONTRACT_ADDRESS as `0x${string}`,
         abi: fortuneProtocolAbi,
         functionName: "setFee",
-        args: [0, BigInt(newFee)],
+        args: [0, feeWei],
       })
+      setNewFee("")
     } catch (e) { console.error(e) }
   }
 
@@ -70,13 +82,18 @@ export function AdminPanel() {
   const handleAddPack = async () => {
     if (!newPackName || !newPackFortunes || !newPackPrice) return
     const fortunes = newPackFortunes.split(",").map(s => s.trim()).filter(Boolean)
+    if (fortunes.length === 0) return
     try {
+      const priceWei = parseEther(newPackPrice)
       await writeContractAsync({
         address: FORTUNE_CONTRACT_ADDRESS as `0x${string}`,
         abi: fortuneProtocolAbi,
         functionName: "addPack",
-        args: [newPackName, fortunes, BigInt(newPackPrice), true],
+        args: [newPackName, fortunes, priceWei, true],
       })
+      setNewPackName("")
+      setNewPackFortunes("")
+      setNewPackPrice("")
     } catch (e) { console.error(e) }
   }
 
@@ -121,11 +138,12 @@ export function AdminPanel() {
             type="text"
             value={newFee}
             onChange={(e) => setNewFee(e.target.value)}
-            placeholder="Fee in wei"
+            placeholder="Fee in ETH (e.g. 0.005)"
             className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-500"
           />
           <button onClick={handleSetFee}
-            className="px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white text-sm rounded-lg transition-colors">
+            disabled={!newFee}
+            className="px-4 py-2 bg-amber-700 hover:bg-amber-600 disabled:bg-zinc-700 text-white text-sm rounded-lg transition-colors">
             Set
           </button>
         </div>
@@ -152,11 +170,12 @@ export function AdminPanel() {
             type="text"
             value={newPackPrice}
             onChange={(e) => setNewPackPrice(e.target.value)}
-            placeholder="Price in wei"
+            placeholder="Price in ETH (e.g. 0.01)"
             className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-500"
           />
           <button onClick={handleAddPack}
-            className="px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white text-sm rounded-lg transition-colors">
+            disabled={!newPackName || !newPackFortunes || !newPackPrice}
+            className="px-4 py-2 bg-amber-700 hover:bg-amber-600 disabled:bg-zinc-700 text-white text-sm rounded-lg transition-colors">
             Add
           </button>
         </div>

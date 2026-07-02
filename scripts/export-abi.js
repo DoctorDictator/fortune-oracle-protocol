@@ -1,12 +1,26 @@
 const fs = require("fs")
 const path = require("path")
 
-const artifactPath = path.resolve(__dirname, "../artifacts/contracts/FortuneProtocol.sol/FortuneProtocol.json")
-const outputPath = path.resolve(__dirname, "../frontend/src/lib/abi.ts")
+function exportAbi() {
+  const artifactPath = path.resolve(__dirname, "../artifacts/contracts/FortuneProtocol.sol/FortuneProtocol.json")
+  const outputPath = path.resolve(__dirname, "../frontend/src/lib/abi.ts")
 
-const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"))
+  if (!fs.existsSync(artifactPath)) {
+    console.error("Artifact not found. Run 'hardhat compile' first.")
+    process.exitCode = 1
+    return
+  }
 
-const abiCode = `export const fortuneProtocolAbi = ${JSON.stringify(artifact.abi, null, 2)} as const\n`
+  const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"))
 
-fs.writeFileSync(outputPath, abiCode)
-console.log(`ABI exported to ${outputPath}`)
+  const abiCode = `export const fortuneProtocolAbi = ${JSON.stringify(artifact.abi, null, 2)} as const\n`
+
+  fs.writeFileSync(outputPath, abiCode)
+  console.log(`ABI exported to ${outputPath}`)
+}
+
+if (require.main === module) {
+  exportAbi()
+}
+
+module.exports = exportAbi

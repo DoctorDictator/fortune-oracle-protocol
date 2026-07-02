@@ -2,6 +2,7 @@ import { http, createConfig } from "wagmi"
 import { sepolia, hardhat } from "wagmi/chains"
 
 export const FORTUNE_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "0x0"
+export const TARGET_CHAIN_ID = Number(process.env.NEXT_PUBLIC_TARGET_CHAIN_ID || "11155111")
 
 export const config = createConfig({
   chains: [sepolia, hardhat],

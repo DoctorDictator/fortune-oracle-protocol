@@ -4,12 +4,15 @@ import { useState } from "react"
 import { useAccount, useWriteContract, useReadContract } from "wagmi"
 import { fortuneProtocolAbi } from "@/lib/abi"
 import { FORTUNE_CONTRACT_ADDRESS } from "@/lib/config"
-import { parseEther } from "viem"
+
+type TxState = "idle" | "confirming_wallet" | "submitted" | "confirmed" | "waiting_for_vrf" | "fulfilled" | "failed"
 
 export function ReadingForm() {
   const { address, isConnected } = useAccount()
   const [packId, setPackId] = useState(0)
-  const [isLoading, setIsLoading] = useState(false)
+  const [txState, setTxState] = useState<TxState>("idle")
+  const [fortune, setFortune] = useState("")
+  const [errorMsg, setErrorMsg] = useState("")
 
   const { data: pack } = useReadContract({
     address: FORTUNE_CONTRACT_ADDRESS as `0x${string}`,
@@ -28,19 +31,24 @@ export function ReadingForm() {
 
   const handleRequest = async () => {
     if (!address || !pack) return
-    setIsLoading(true)
+    setTxState("confirming_wallet")
+    setErrorMsg("")
+    setFortune("")
+
     try {
-      const hash = await writeContractAsync({
+      await writeContractAsync({
         address: FORTUNE_CONTRACT_ADDRESS as `0x${string}`,
         abi: fortuneProtocolAbi,
         functionName: "requestReading",
-    args: [packId],
+        args: [packId],
         value: (pack as { price: bigint }).price,
       })
+
+      setTxState("submitted")
     } catch (e) {
+      setTxState("failed")
+      setErrorMsg("Transaction rejected or failed")
       console.error(e)
-    } finally {
-      setIsLoading(false)
     }
   }
 
@@ -52,9 +60,31 @@ export function ReadingForm() {
     )
   }
 
+  const stateLabel = (() => {
+    switch (txState) {
+      case "confirming_wallet": return "Confirm in wallet..."
+      case "submitted": return "Transaction submitted"
+      case "confirmed": return "Awaiting VRF response..."
+      case "waiting_for_vrf": return "Waiting for Chainlink VRF..."
+      case "fulfilled": return `Your fortune: "${fortune}"`
+      case "failed": return `Failed: ${errorMsg}`
+      default: return null
+    }
+  })()
+
   return (
     <div className="p-6 bg-zinc-900 rounded-xl border border-zinc-800 space-y-4">
       <h2 className="text-lg font-semibold text-white">Request a Fortune Reading</h2>
+
+      {txState !== "idle" && (
+        <div className={`p-3 rounded-lg text-sm ${
+          txState === "fulfilled" ? "bg-green-900/30 text-green-300 border border-green-800/50" :
+          txState === "failed" ? "bg-red-900/30 text-red-300 border border-red-800/50" :
+          "bg-blue-900/30 text-blue-300 border border-blue-800/50"
+        }`}>
+          {stateLabel}
+        </div>
+      )}
 
       {packCount && Number(packCount) > 1 && (
         <div className="flex gap-2">
@@ -91,10 +121,10 @@ export function ReadingForm() {
 
       <button
         onClick={handleRequest}
-        disabled={isLoading || !pack || !(pack as { active: boolean }).active}
+        disabled={txState !== "idle" || !pack || !(pack as { active: boolean }).active}
         className="w-full py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-lg font-medium transition-colors"
       >
-        {isLoading ? "Requesting..." : "🔮 Read My Fortune"}
+        {txState !== "idle" ? "Requesting..." : "Read My Fortune"}
       </button>
     </div>
   )

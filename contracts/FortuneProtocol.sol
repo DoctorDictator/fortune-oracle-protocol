@@ -55,16 +55,19 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
     event ReadingRefunded(uint256 indexed readingId, address indexed user);
     event DailyFortuneRequested(uint256 readingId);
     event DailyFortunePublished(uint256 readingId, string fortune);
-    event FeeUpdated(uint256 newFee);
-    event PackUpdated(uint32 packId, string name, bool active);
-    event TreasuryUpdated(address treasury);
+    event FeeUpdated(uint32 indexed packId, uint256 oldFee, uint256 newFee);
+    event PackUpdated(uint32 indexed packId, string name, uint256 price, bool active, uint256 fortuneCount);
+    event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     event RefundTimeoutUpdated(uint256 timeout);
     event DailyFortuneIntervalUpdated(uint256 interval);
-    event VRFConfigUpdated();
+    event VRFConfigUpdated(bytes32 keyHash, uint64 subId, uint32 callbackGasLimit, uint16 confirmations, uint32 numWords, bool nativePayment);
     event DailyFortuneToggled(bool active);
+    event FundsWithdrawn(address indexed recipient, uint256 amount);
 
     error InvalidPack();
-    error InsufficientPayment();
+    error InvalidPayment(uint256 required, uint256 received);
+    error InvalidVRFConfig();
+    error EmptyFortunePack();
     error ReadingNotFound();
     error NotReadingOwner();
     error ReadingNotPending();
@@ -75,6 +78,7 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
     error NoFulfilledReadings();
     error TransferFailed();
     error PackNotActive();
+
     modifier readingExists(uint256 readingId) {
         if (_readings[readingId].requestedAt == 0) revert ReadingNotFound();
         _;
@@ -88,11 +92,18 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
     constructor(
         uint64 subscriptionId,
         address vrfCoordinator,
+        bytes32 keyHash,
         address treasury_
     ) VRFConsumerBaseV2Plus(vrfCoordinator) {
+        if (subscriptionId == 0) revert InvalidVRFConfig();
+        if (vrfCoordinator == address(0)) revert InvalidVRFConfig();
+        if (keyHash == bytes32(0)) revert InvalidVRFConfig();
         if (treasury_ == address(0)) revert ZeroAddress();
+        if (_callbackGasLimit == 0) revert InvalidVRFConfig();
+        if (_requestConfirmations == 0) revert InvalidVRFConfig();
+        if (_numWords == 0) revert InvalidVRFConfig();
         _subscriptionId = subscriptionId;
-        _keyHash = 0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae;
+        _keyHash = keyHash;
         treasury = treasury_;
         _createDefaultPacks();
     }
@@ -115,7 +126,7 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
         if (packId >= _packs.length) revert InvalidPack();
         FortunePack storage pack = _packs[packId];
         if (!pack.active) revert PackNotActive();
-        if (msg.value < pack.price) revert InsufficientPayment();
+        if (msg.value != pack.price) revert InvalidPayment(pack.price, msg.value);
 
         uint256[] storage userReadingIds = _userReadings[msg.sender];
         uint256 pendingCount;
@@ -210,6 +221,27 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
         return userReadings;
     }
 
+    function getUserReadingIdsPage(address user, uint256 offset, uint256 limit)
+        external
+        view
+        returns (uint256[] memory ids, uint256 total)
+    {
+        uint256[] storage allIds = _userReadings[user];
+        total = allIds.length;
+        if (offset >= total) {
+            ids = new uint256[](0);
+            return (ids, total);
+        }
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 pageSize = end - offset;
+        ids = new uint256[](pageSize);
+        for (uint256 i = 0; i < pageSize; i++) {
+            ids[i] = allIds[offset + i];
+        }
+        return (ids, total);
+    }
+
     function getPendingRefundCount(address user) external view returns (uint256) {
         uint256[] storage ids = _userReadings[user];
         uint256 count;
@@ -299,11 +331,13 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
 
     function setFee(uint32 packId, uint256 newFee) external onlyOwner {
         if (packId >= _packs.length) revert InvalidPack();
+        uint256 oldFee = _packs[packId].price;
         _packs[packId].price = newFee;
-        emit FeeUpdated(newFee);
+        emit FeeUpdated(packId, oldFee, newFee);
     }
 
     function setPack(uint32 packId, string calldata name, string[] calldata fortunes, uint256 price, bool active) external onlyOwner {
+        if (fortunes.length == 0) revert EmptyFortunePack();
         if (packId < _packs.length) {
             FortunePack storage pack = _packs[packId];
             pack.name = name;
@@ -313,18 +347,20 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
         } else {
             _packs.push(FortunePack({name: name, fortunes: fortunes, price: price, active: active}));
         }
-        emit PackUpdated(packId, name, active);
+        emit PackUpdated(packId, name, price, active, fortunes.length);
     }
 
     function addPack(string calldata name, string[] calldata fortunes, uint256 price, bool active) external onlyOwner {
+        if (fortunes.length == 0) revert EmptyFortunePack();
         _packs.push(FortunePack({name: name, fortunes: fortunes, price: price, active: active}));
-        emit PackUpdated(uint32(_packs.length - 1), name, active);
+        emit PackUpdated(uint32(_packs.length - 1), name, price, active, fortunes.length);
     }
 
     function setTreasury(address treasury_) external onlyOwner {
         if (treasury_ == address(0)) revert ZeroAddress();
+        address oldTreasury = treasury;
         treasury = treasury_;
-        emit TreasuryUpdated(treasury_);
+        emit TreasuryUpdated(oldTreasury, treasury_);
     }
 
     function setRefundTimeout(uint256 timeout) external onlyOwner {
@@ -349,13 +385,14 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
         _requestConfirmations = confirmations;
         _numWords = numWords;
         _nativePayment = nativePayment;
-        emit VRFConfigUpdated();
+        emit VRFConfigUpdated(keyHash, subId, callbackGasLimit, confirmations, numWords, nativePayment);
     }
 
     function withdraw() external onlyOwner {
         uint256 balance = address(this).balance;
         (bool success, ) = payable(treasury).call{value: balance}("");
         if (!success) revert TransferFailed();
+        emit FundsWithdrawn(treasury, balance);
     }
 
     function withdrawTo(address recipient) external onlyOwner {
@@ -363,6 +400,7 @@ contract FortuneProtocol is VRFConsumerBaseV2Plus, Pausable, ReentrancyGuard {
         uint256 balance = address(this).balance;
         (bool success, ) = payable(recipient).call{value: balance}("");
         if (!success) revert TransferFailed();
+        emit FundsWithdrawn(recipient, balance);
     }
 
     receive() external payable {}

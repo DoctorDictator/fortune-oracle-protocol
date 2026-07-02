@@ -22,11 +22,12 @@ async function deployFixture() {
   await coordinator.fundSubscriptionWithNative(subId, { value: FUND_AMOUNT })
 
   const FortuneProtocolFactory = await ethers.getContractFactory("FortuneProtocol")
-  const protocol = await FortuneProtocolFactory.deploy(subId, coordinator.target, treasury.address)
+  const keyHash = ethers.keccak256(ethers.toUtf8Bytes("test"))
+  const protocol = await FortuneProtocolFactory.deploy(subId, coordinator.target, keyHash, treasury.address)
 
   await coordinator.addConsumer(subId, protocol.target)
 
-  return { coordinator, protocol, deployer, user, other, treasury, subId }
+  return { coordinator, protocol, deployer, user, other, treasury, subId, keyHash }
 }
 
 function findEvent(receipt, eventName) {
@@ -67,7 +68,7 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
 !isLocal ? describe.skip : describe("FortuneProtocol", () => {
   describe("Deployment", () => {
     it("should deploy with correct initial state", async () => {
-      const { protocol, deployer, treasury } = await deployFixture()
+      const { protocol, deployer, treasury, keyHash, subId } = await deployFixture()
       expect(await protocol.treasury()).to.equal(treasury.address)
       expect(await protocol.getPackCount()).to.equal(1n)
       expect(await protocol.owner()).to.equal(deployer.address)
@@ -75,6 +76,46 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       expect(pack.name).to.equal("Classic")
       expect(pack.active).to.be.true
       expect(pack.price).to.equal(ethers.parseEther("0.001"))
+      const config = await protocol.getVRFConfig()
+      expect(config[0]).to.equal(keyHash)
+      expect(config[1]).to.equal(subId)
+    })
+
+    it("should reject zero subscription ID", async () => {
+      const coordinator = await ethers.getContractFactory("VRFCoordinatorV2PlusMock")
+      const coord = await coordinator.deploy(BASE_FEE, GAS_PRICE_LINK)
+      const keyHash = ethers.keccak256(ethers.toUtf8Bytes("test"))
+      const FortuneProtocolFactory = await ethers.getContractFactory("FortuneProtocol")
+      await expect(
+        FortuneProtocolFactory.deploy(0, coord.target, keyHash, ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(FortuneProtocolFactory, "InvalidVRFConfig")
+    })
+
+    it("should reject zero VRF coordinator", async () => {
+      const [deployer] = await ethers.getSigners()
+      const VRFCoordinatorFactory = await ethers.getContractFactory("VRFCoordinatorV2PlusMock")
+      const coord = await VRFCoordinatorFactory.deploy(BASE_FEE, GAS_PRICE_LINK)
+      const tx = await coord.createSubscription()
+      const receipt = await tx.wait()
+      const subId = receipt.logs[0].args[0]
+      const keyHash = ethers.keccak256(ethers.toUtf8Bytes("test"))
+      const FortuneProtocolFactory = await ethers.getContractFactory("FortuneProtocol")
+      await expect(
+        FortuneProtocolFactory.deploy(subId, ethers.ZeroAddress, keyHash, deployer.address)
+      ).to.be.revertedWithCustomError(FortuneProtocolFactory, "ZeroAddress")
+    })
+
+    it("should reject zero key hash", async () => {
+      const [deployer] = await ethers.getSigners()
+      const VRFCoordinatorFactory = await ethers.getContractFactory("VRFCoordinatorV2PlusMock")
+      const coord = await VRFCoordinatorFactory.deploy(BASE_FEE, GAS_PRICE_LINK)
+      const tx = await coord.createSubscription()
+      const receipt = await tx.wait()
+      const subId = receipt.logs[0].args[0]
+      const FortuneProtocolFactory = await ethers.getContractFactory("FortuneProtocol")
+      await expect(
+        FortuneProtocolFactory.deploy(subId, coord.target, ethers.ZeroHash, deployer.address)
+      ).to.be.revertedWithCustomError(FortuneProtocolFactory, "InvalidVRFConfig")
     })
 
     it("should revert on zero treasury address", async () => {
@@ -83,11 +124,12 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const tx = await coord.createSubscription()
       const receipt = await tx.wait()
       const subId = receipt.logs[0].args[0]
+      const keyHash = ethers.keccak256(ethers.toUtf8Bytes("test"))
 
       const FortuneProtocolFactory = await ethers.getContractFactory("FortuneProtocol")
       await expect(
-        FortuneProtocolFactory.deploy(subId, coord.target, ethers.ZeroAddress)
-      ).to.be.reverted
+        FortuneProtocolFactory.deploy(subId, coord.target, keyHash, ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(FortuneProtocolFactory, "ZeroAddress")
     })
   })
 
@@ -106,7 +148,7 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const reading = await protocol.getReading(readingId)
       expect(reading.user).to.equal(user.address)
       expect(reading.packId).to.equal(0n)
-      expect(reading.status).to.equal(0n) // Pending
+      expect(reading.status).to.equal(0n)
       expect(reading.fee).to.equal(fee)
       expect(reading.fortune).to.equal("")
     })
@@ -118,11 +160,18 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       ).to.be.revertedWithCustomError(protocol, "InvalidPack")
     })
 
-    it("should revert on insufficient payment", async () => {
+    it("should revert on underpayment", async () => {
       const { protocol, user } = await deployFixture()
       await expect(
         protocol.connect(user).requestReading(0, { value: ethers.parseEther("0.0001") })
-      ).to.be.revertedWithCustomError(protocol, "InsufficientPayment")
+      ).to.be.revertedWithCustomError(protocol, "InvalidPayment")
+    })
+
+    it("should revert on overpayment", async () => {
+      const { protocol, user } = await deployFixture()
+      await expect(
+        protocol.connect(user).requestReading(0, { value: ethers.parseEther("0.002") })
+      ).to.be.revertedWithCustomError(protocol, "InvalidPayment")
     })
 
     it("should revert when paused", async () => {
@@ -137,10 +186,8 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const { protocol, user } = await deployFixture()
       const fee = ethers.parseEther("0.001")
 
-      const pack = await protocol.getPack(0)
       for (let i = 0; i < 5; i++) {
         await protocol.connect(user).requestReading(0, { value: fee })
-        const packInfo = await protocol.getPack(0)
       }
 
       await expect(
@@ -164,7 +211,7 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const fulfillReceipt = await fulfillTx.wait()
 
       const fulfilled = await protocol.getReading(readingId)
-      expect(fulfilled.status).to.equal(1n) // Fulfilled
+      expect(fulfilled.status).to.equal(1n)
       expect(fulfilled.fortune).to.not.equal("")
       expect(fulfilled.fulfilledAt).to.not.equal(0n)
 
@@ -227,8 +274,52 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
 
       const readings = await protocol.getUserReadings(user.address)
       expect(readings.length).to.equal(2)
-      expect(readings[0].status).to.equal(1n) // Fulfilled
+      expect(readings[0].status).to.equal(1n)
       expect(readings[1].status).to.equal(1n)
+    })
+  })
+
+  describe("getUserReadingIdsPage", () => {
+    it("should return correct page slice", async () => {
+      const { protocol, user } = await deployFixture()
+      const fee = ethers.parseEther("0.001")
+
+      for (let i = 0; i < 5; i++) {
+        await protocol.connect(user).requestReading(0, { value: fee })
+      }
+
+      const [page0, total0] = await protocol.getUserReadingIdsPage(user.address, 0, 2)
+      expect(page0.length).to.equal(2)
+      expect(total0).to.equal(5n)
+      expect(page0[0]).to.equal(0n)
+      expect(page0[1]).to.equal(1n)
+
+      const [page1, total1] = await protocol.getUserReadingIdsPage(user.address, 2, 2)
+      expect(page1.length).to.equal(2)
+      expect(total1).to.equal(5n)
+      expect(page1[0]).to.equal(2n)
+      expect(page1[1]).to.equal(3n)
+
+      const [page2, total2] = await protocol.getUserReadingIdsPage(user.address, 4, 2)
+      expect(page2.length).to.equal(1)
+      expect(total2).to.equal(5n)
+      expect(page2[0]).to.equal(4n)
+    })
+
+    it("should return empty array for offset beyond total", async () => {
+      const { protocol, user } = await deployFixture()
+      const [ids, total] = await protocol.getUserReadingIdsPage(user.address, 0, 10)
+      expect(ids.length).to.equal(0)
+      expect(total).to.equal(0n)
+    })
+
+    it("should return total count", async () => {
+      const { protocol, user } = await deployFixture()
+      const fee = ethers.parseEther("0.001")
+
+      await protocol.connect(user).requestReading(0, { value: fee })
+      const [ids, total] = await protocol.getUserReadingIdsPage(user.address, 0, 10)
+      expect(total).to.equal(1n)
     })
   })
 
@@ -247,7 +338,7 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const refundReceipt = await refundTx.wait()
 
       const reading = await protocol.getReading(readingId)
-      expect(reading.status).to.equal(2n) // Refunded
+      expect(reading.status).to.equal(2n)
 
       const refundEvent = findEvent(refundReceipt, "ReadingRefunded")
       expect(refundEvent).to.not.be.undefined
@@ -399,33 +490,51 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const { protocol, deployer } = await deployFixture()
       const newFee = ethers.parseEther("0.005")
 
-      await protocol.connect(deployer).setFee(0, newFee)
+      const tx = await protocol.connect(deployer).setFee(0, newFee)
+      const receipt = await tx.wait()
       const pack = await protocol.getPack(0)
       expect(pack.price).to.equal(newFee)
+
+      const feeEvent = getEventArg(receipt, protocol, "FeeUpdated")
+      expect(feeEvent).to.not.be.undefined
+      expect(feeEvent[0]).to.equal(0n)
+      expect(feeEvent[2]).to.equal(newFee)
     })
 
     it("should allow owner to add pack", async () => {
       const { protocol, deployer } = await deployFixture()
       const fortunes = ["Fortune 1", "Fortune 2"]
 
-      await protocol.connect(deployer).addPack("Premium", fortunes, ethers.parseEther("0.01"), true)
+      const tx = await protocol.connect(deployer).addPack("Premium", fortunes, ethers.parseEther("0.01"), true)
+      const receipt = await tx.wait()
       expect(await protocol.getPackCount()).to.equal(2n)
 
       const pack = await protocol.getPack(1)
       expect(pack.name).to.equal("Premium")
       expect(pack.fortunes.length).to.equal(2)
       expect(pack.price).to.equal(ethers.parseEther("0.01"))
+
+      const packEvent = getEventArg(receipt, protocol, "PackUpdated")
+      expect(packEvent).to.not.be.undefined
+      expect(packEvent[1]).to.equal("Premium")
+      expect(packEvent[4]).to.equal(2n)
     })
 
     it("should allow owner to set pack", async () => {
       const { protocol, deployer } = await deployFixture()
       const fortunes = ["Updated fortune"]
 
-      await protocol.connect(deployer).setPack(0, "Updated", fortunes, ethers.parseEther("0.002"), true)
+      const tx = await protocol.connect(deployer).setPack(0, "Updated", fortunes, ethers.parseEther("0.002"), true)
+      const receipt = await tx.wait()
       const pack = await protocol.getPack(0)
       expect(pack.name).to.equal("Updated")
       expect(pack.fortunes.length).to.equal(1)
       expect(pack.price).to.equal(ethers.parseEther("0.002"))
+
+      const packEvent = getEventArg(receipt, protocol, "PackUpdated")
+      expect(packEvent).to.not.be.undefined
+      expect(packEvent[2]).to.equal(ethers.parseEther("0.002"))
+      expect(packEvent[4]).to.equal(1n)
     })
 
     it("should allow owner to deactivate pack", async () => {
@@ -437,17 +546,38 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       ).to.be.revertedWithCustomError(protocol, "PackNotActive")
     })
 
+    it("should reject empty fortune pack in addPack", async () => {
+      const { protocol, deployer } = await deployFixture()
+      await expect(
+        protocol.connect(deployer).addPack("Empty", [], ethers.parseEther("0.001"), true)
+      ).to.be.revertedWithCustomError(protocol, "EmptyFortunePack")
+    })
+
+    it("should reject empty fortune pack in setPack", async () => {
+      const { protocol, deployer } = await deployFixture()
+      await expect(
+        protocol.connect(deployer).setPack(0, "Empty", [], ethers.parseEther("0.001"), true)
+      ).to.be.revertedWithCustomError(protocol, "EmptyFortunePack")
+    })
+
     it("should allow owner to set treasury", async () => {
-      const { protocol, deployer, other } = await deployFixture()
-      await protocol.connect(deployer).setTreasury(other.address)
+      const { protocol, deployer, treasury, other } = await deployFixture()
+      const tx = await protocol.connect(deployer).setTreasury(other.address)
+      const receipt = await tx.wait()
       expect(await protocol.treasury()).to.equal(other.address)
+
+      const treasuryEvent = getEventArg(receipt, protocol, "TreasuryUpdated")
+      expect(treasuryEvent).to.not.be.undefined
+      expect(treasuryEvent[0]).to.equal(treasury.address)
+      expect(treasuryEvent[1]).to.equal(other.address)
     })
 
     it("should allow owner to update VRF config", async () => {
       const { protocol, deployer } = await deployFixture()
-      const newKeyHash = ethers.keccak256(ethers.toUtf8Bytes("test"))
+      const newKeyHash = ethers.keccak256(ethers.toUtf8Bytes("new-config"))
 
-      await protocol.connect(deployer).setVRFConfig(newKeyHash, 1, 1000000, 5, 2, true)
+      const tx = await protocol.connect(deployer).setVRFConfig(newKeyHash, 1, 1000000, 5, 2, true)
+      const receipt = await tx.wait()
       const config = await protocol.getVRFConfig()
       expect(config[0]).to.equal(newKeyHash)
       expect(config[1]).to.equal(1n)
@@ -455,6 +585,10 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       expect(config[3]).to.equal(5)
       expect(config[4]).to.equal(2)
       expect(config[5]).to.be.true
+
+      const vrfEvent = getEventArg(receipt, protocol, "VRFConfigUpdated")
+      expect(vrfEvent).to.not.be.undefined
+      expect(vrfEvent[0]).to.equal(newKeyHash)
     })
 
     it("should allow owner to set refund timeout", async () => {
@@ -488,10 +622,16 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       expect(balance).to.equal(ethers.parseEther("0.001"))
 
       const treasuryBefore = await ethers.provider.getBalance(treasury.address)
-      await protocol.connect(deployer).withdraw()
+      const tx = await protocol.connect(deployer).withdraw()
+      const receipt = await tx.wait()
       const treasuryAfter = await ethers.provider.getBalance(treasury.address)
 
       expect(treasuryAfter - treasuryBefore).to.equal(ethers.parseEther("0.001"))
+
+      const withdrawEvent = getEventArg(receipt, protocol, "FundsWithdrawn")
+      expect(withdrawEvent).to.not.be.undefined
+      expect(withdrawEvent[0]).to.equal(treasury.address)
+      expect(withdrawEvent[1]).to.equal(ethers.parseEther("0.001"))
     })
 
     it("should allow owner to withdraw to specific address", async () => {
@@ -500,10 +640,16 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       await protocol.connect(user).requestReading(0, { value: ethers.parseEther("0.001") })
 
       const balanceBefore = await ethers.provider.getBalance(other.address)
-      await protocol.connect(deployer).withdrawTo(other.address)
+      const tx = await protocol.connect(deployer).withdrawTo(other.address)
+      const receipt = await tx.wait()
       const balanceAfter = await ethers.provider.getBalance(other.address)
 
       expect(balanceAfter - balanceBefore).to.equal(ethers.parseEther("0.001"))
+
+      const withdrawEvent = getEventArg(receipt, protocol, "FundsWithdrawn")
+      expect(withdrawEvent).to.not.be.undefined
+      expect(withdrawEvent[0]).to.equal(other.address)
+      expect(withdrawEvent[1]).to.equal(ethers.parseEther("0.001"))
     })
 
     it("should revert non-owner withdraw", async () => {
@@ -596,7 +742,7 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       expect(reading.status).to.equal(1n)
     })
 
-    it("should emit PackUpdated event", async () => {
+    it("should emit PackUpdated event with enriched data", async () => {
       const { protocol, deployer } = await deployFixture()
       const fortunes = ["New fortune"]
 
@@ -606,17 +752,21 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
       const packEvent = findEvent(receipt, "PackUpdated")
       expect(packEvent).to.not.be.undefined
       expect(packEvent.args[1]).to.equal("New")
+      expect(packEvent.args[2]).to.equal(ethers.parseEther("0.005"))
+      expect(packEvent.args[3]).to.equal(true)
+      expect(packEvent.args[4]).to.equal(1n)
     })
 
-    it("should emit TreasuryUpdated event", async () => {
-      const { protocol, deployer, other } = await deployFixture()
+    it("should emit TreasuryUpdated event with old and new", async () => {
+      const { protocol, deployer, treasury, other } = await deployFixture()
 
       const tx = await protocol.connect(deployer).setTreasury(other.address)
       const receipt = await tx.wait()
 
       const treasuryEvent = findEvent(receipt, "TreasuryUpdated")
       expect(treasuryEvent).to.not.be.undefined
-      expect(treasuryEvent.args[0]).to.equal(other.address)
+      expect(treasuryEvent.args[0]).to.equal(treasury.address)
+      expect(treasuryEvent.args[1]).to.equal(other.address)
     })
   })
 
@@ -635,9 +785,9 @@ async function requestAndFulfill(protocol, coordinator, user, packId = 0) {
     it("should return VRF config", async () => {
       const { protocol } = await deployFixture()
       const config = await protocol.getVRFConfig()
-      expect(config[2]).to.equal(2500000) // callbackGasLimit
-      expect(config[3]).to.equal(3) // requestConfirmations
-      expect(config[4]).to.equal(1) // numWords
+      expect(config[2]).to.equal(2500000)
+      expect(config[3]).to.equal(3)
+      expect(config[4]).to.equal(1)
     })
   })
 })

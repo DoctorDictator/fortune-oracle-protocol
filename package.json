@@ -5,16 +5,17 @@
   "description": "Advanced Fortune dApp using Chainlink VRF v2.5 on Sepolia",
   "scripts": {
     "compile": "hardhat compile",
-    "test": "hardhat test tests/*.test.js",
+    "test": "hardhat test tests/FortuneProtocol.test.js",
     "deploy": "hardhat run scripts/deploy.js --network",
-    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia && node scripts/export-abi.js",
     "verify": "hardhat verify --network",
+    "export:abi": "node scripts/export-abi.js",
     "lint": "solhint 'contracts/**/*.sol'",
     "lint:fix": "solhint 'contracts/**/*.sol' --fix",
     "coverage": "hardhat coverage --solcoverjs ./.solcover.js",
     "format": "prettier --write .",
     "frontend:dev": "cd frontend && npm run dev",
-    "frontend:build": "cd frontend && npm run build"
+    "frontend:build": "hardhat compile && node scripts/export-abi.js && cd frontend && npm run build"
   },
   "devDependencies": {
     "@chainlink/contracts": "^1.3.0",
